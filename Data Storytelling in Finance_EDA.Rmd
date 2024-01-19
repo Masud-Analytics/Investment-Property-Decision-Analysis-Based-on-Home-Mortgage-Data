@@ -1,0 +1,394 @@
+---
+title: "Investment Property Decision Analysis Based on Home Mortgage Data"
+author: "Md Masud Rana"
+date: "`r Sys.Date()`"
+output: rmdformats::downcute
+runtime: shiny_prerendered
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(shiny)
+library(tidyverse)
+library(rpart)
+library(rpart.plot)
+library(caTools)
+library(DT)
+library(DescTools)
+#install.packages('rlang') # caret dependency package
+#install.packages('hardhat')  # caret dependency package
+library(hardhat)
+#install.packages('ipred')  # caret dependency package
+library(ipred)
+library(caret)
+library(grid)
+
+rm(list=ls()) # Clear all data in environment
+fillColor <-  "#DA70D6" # Custom color
+fillColor2 <-  "#D90077" # Custom color
+fillColor3 <-  "#E389B9" # Custom color
+#Load data
+homeMortgage <-  read.csv("FMFM2019_seminar.csv", header = TRUE)
+```
+
+# 1 Introduction
+
+## 1.1 General information about the project
+Let us introduce you to the family Miller. The Millers have already bought and are living in Single Family home. Moreover, they are currently thinking about buying an **Investment property** and would like to take on another mortgage from the federally backed mortgage companies Fannie Mae or Freddie Mac.  
+
+However, the family is uncertain about what factors to look for when deciding to take on another mortgage for buying an investment property. Therefore, they hired a consultant to look into the publicly available data set from Fannie Mae and Freddie Mac and to do an EDA to determine which factors are the most important when it comes to taking a mortgage for Investment property.
+
+## 1.2 Understanding the data
+* The data used for this seminar can be grouped into and described as follows:  
+  + Location describes the State, metro area and census tract of the property
+  + Property Type describes the Property Type and Occupancy of the property. This also answers the question “Will the owner use the property as their primary residence ?” or would it be a second home or an investment property.
+  + Loan describes the purpose of the Loan, Type of the loan ,Loan’s lien status.
+  + Lender describes the lender associated with the loan and the Federal agency associated with the loan.
+  + Applicant describes the demographic information about the applicants and the co-applicants. This has the applicant gender, co- applicant gender, applicant race and ethnicity, co- applicant race and ethnicity.
+
+## 1.3 Research question
+From the described scenario the consultant analyzes different occupancy categories. The aim is to explore as many columns and establish their relation. However, the final goal is to determine the most relevant and important factors associated with Investment property related mortgagees.  
+
+This research question is important because with such analysis mortgage takers can make a better informed decision based on the most important factors. Therefore, making the investment pay off in the long run.
+
+# 2 Exploratory Data Analysis (EDA)
+
+## 2.1 Mortgage occupancy analysis
+
+In this sub section, an analysis on the distribution of the various **Occupancy categories** by the owners is conducted. As mentioned before, we would be interested in the home Occupancy categories since this status shows us the actual occupancy status of those homes.
+
+```{r example1, collapse = TRUE, echo=FALSE}
+homeMortgageStatus <-  homeMortgage %>% group_by(Occupancy.Code) %>%
+  summarise(CountOfActionTaken = n()) %>%
+  mutate(PercentageActionTaken = CountOfActionTaken /sum(CountOfActionTaken) * 100) %>%
+  arrange(desc(PercentageActionTaken))
+
+ggplot(homeMortgageStatus, aes(x = Occupancy.Code, PercentageActionTaken, 
+                               y = PercentageActionTaken)) +
+  geom_bar(stat='identity',colour="white", fill =fillColor3) +
+  scale_x_continuous(breaks=1:3,labels=c("Principal Residence", "Second Home", "Investment property"))+
+  geom_text(aes(x = Occupancy.Code, y = 1, label = paste0(round(PercentageActionTaken,2),"%",sep="")),
+            hjust=0, vjust=.5, size = 4, colour = 'black', fontface = 'bold') +
+  labs(x = 'Occupancy Code', y = '% of Occupancy by category', title = 'Occupancy Categories') +
+  coord_flip()+
+  theme_classic()
+```
+
+The plot shows us, mostly the mortgage loans are taken as Primary residence with almost **90%**. Then with little more than **6%**, loans are taken to buy Investment properties. Followed by **4%** of loans for second home.
+
+## 2.2 US States with highest amount of mortgages
+In this sub section we want to explore in which top 10 US states the buyers have bought their houses. This analysis should tell us about the most attractive Sates for the buyers.
+
+```{r example2, collapse = TRUE, echo=FALSE}
+homeMortgage %>%
+  filter(US.Postal.State.Code != 00) %>%
+  group_by(US.Postal.State.Code) %>%
+  summarise(CountLoanPurpose = n() ) %>%
+  mutate(percentage = ( CountLoanPurpose/sum(CountLoanPurpose) ) *100 ) %>%
+  mutate(US.Postal.State.Code = reorder(US.Postal.State.Code, percentage)) %>%
+  arrange(desc(percentage)) %>%
+  head(10) %>%
+  
+  ggplot(aes(x = US.Postal.State.Code,y = percentage)) +
+  geom_bar(stat='identity',colour="white", fill =fillColor3) +
+  scale_x_discrete(breaks=1:54,labels=c("Washington", "North Dakota", "New York","Arizona","Illinois","California","Nevada","Colorado","Mississippi","New Hampshire","Georgia","Florida","Pennsylvania","Virginia","New Jersey","Minnesota","Illinois","Indiana","Wisconsin","Utah","Missouri","Tennessee","Maryland","Oregon","South Carolina","Michigan","Kentucky","Alabama","Iowa","Idaho","Louisiana","Connecticut","Oklahoma","Kansas","Arkansas","Nebraska","North Carolina","New Mexico","Ohio","Montana","Delaware","Maine","Rhode Island","Hawaii","South Dakota","West Virginia","District of Columbia","Texas","Wyoming","Vermont","Alaska","Puerto Rico","Washington","Unknown2"))+
+  geom_text(aes(x = US.Postal.State.Code, y = 1, label = paste0(round(percentage,2),"%",sep="")),
+            hjust=0, vjust=.5, size = 4, colour = 'black', fontface = 'bold') +
+  labs(x = 'US Postal State Code', y = 'Count', title = 'US States with highest amount of Mortgages') +
+  coord_flip()+
+  theme_classic()
+```
+
+We can see the highest number of house mortgage loans are taken in state code 6, which is California. It is perhaps not too surprising since California is the most populated states. Secondly the state code 48 takes on second most amount of mortgage, which is Texas.
+
+## 2.3 States and occupancy category distribution
+In this sub section we want to explore whether there are some relation between investment property and in which US State the property is located.
+
+```{r example3, collapse=TRUE, echo=FALSE, warning=FALSE, message=FALSE}
+homeMortgage$Occupancy.Code <- as.factor(homeMortgage$Occupancy.Code)
+
+Top10states <- homeMortgage %>%
+  filter(US.Postal.State.Code != 00) %>%
+  group_by(US.Postal.State.Code) %>%
+  summarise(CountLoanPurpose = n() ) %>%
+  mutate(percentage = ( CountLoanPurpose/sum(CountLoanPurpose) ) *100 ) %>%
+  mutate(US.Postal.State.Code = reorder(US.Postal.State.Code, percentage)) %>%
+  arrange(desc(percentage)) %>%
+  head(50)
+homeMortgage %>%
+  filter(US.Postal.State.Code != 00) %>%
+  filter(US.Postal.State.Code %in% Top10states$US.Postal.State.Code) %>%
+  group_by(US.Postal.State.Code,Occupancy.Code) %>%
+  summarise(CountLoanPurpose = n() ) %>%
+  
+  ggplot(aes(x = US.Postal.State.Code,y = CountLoanPurpose,fill = Occupancy.Code)) +
+  geom_bar(stat='identity',colour="white") +
+  labs(x = 'US Postal State Code', y = 'Count', title = 'States and Occupancy Category Distribution') +
+  theme_classic() + theme(legend.position="top")
+```
+
+From the plot above we can see California also has more investment properties than the rest of the states.
+
+## 2.4 Note amount and occupancy category
+Looking at the distribution of the notes amount for the different occupancy codes, it can be observed that the distributions for primary residence and second home overlap almost entirely between each other. Meanwhile, the distribution for the investment property has a narrower and higher distribution that is slightly skewed to the left side. This means, that the notes amount for investment properties are quite similar to the primary residence and second home, but their difference is present in the extreme values, more specifically in the notes with the lower value. This means, that plenty of notes with low amount are given for investment properties.
+
+```{r example2.4, collapse=TRUE, echo=FALSE}
+homeMortgage <- homeMortgage %>%
+  filter(Note.Amount != 999999999)
+homeMortgage$Note.Amount <- as.numeric(homeMortgage$Note.Amount)
+homeMortgage$Interest.Rate.at.Origination <- as.numeric(homeMortgage$Interest.Rate.at.Origination)
+
+ggplot(homeMortgage,aes(x=Note.Amount,fill=Occupancy.Code)) +
+  geom_density(alpha=0.6)+
+  ylab("Number of Loans") +
+  xlab("Loan Amount") +
+  ggtitle("Loan Amount Distribution")+
+  theme_classic()+ theme(legend.position="top")
+```
+
+## 2.5 Borrower's credit score model and occupancy category
+With respects to the Borrower’s Credit Score Model, only the following models were used for the 2019 single family mortgages: Equifax Beacon (1), Experian Fair Isaac (2), FICO Risk Score Classic 04 (3). There appears that the amount of mortgages for all these three credit score model given for second housing and investment properties are the same. The difference shows only with the mortgages given for primary residences, where Equifax Beacon has the largest amount of this, followed by FICO Risk Score Classic 04 and Experian Fair Isaac.
+
+```{r example2.5, collapse=TRUE, echo=FALSE}
+homeMortgage <- homeMortgage %>%
+  filter(Credit.Score.Model...Borrower != 99)
+homeMortgage <- homeMortgage %>%
+  filter(Credit.Score.Model...Borrower != 9)
+homeMortgage$Credit.Score.Model...Borrower <- as.factor(homeMortgage$Credit.Score.Model...Borrower)
+
+ggplot(homeMortgage,aes(x=Credit.Score.Model...Borrower,fill=Occupancy.Code)) +
+  geom_bar()+
+  ylab("Number of Loans") +
+  xlab("Borrower's Credit Score Model") +
+  ggtitle("Borrower's Credit Score Model and Occupancy Categories")+
+  theme_classic()+theme(legend.position="top")
+```
+
+## 2.6 Borrower's age and occupancy category
+The distribution of the occupancy codes within the different age groups shows that primary residences are the most important for all ages, this is expected because it satisfies a basic necessity. In the younger group age (Under 25 years old) there is almost no existence of second home and investment property, this can be explained by the fact that in that age group people do not have the income necessary to buy a second home or to invest. Income increases as people get older, this is why it’s observed in the graph that the percentages of mortgagees for both the investment properties and second homes increase as you advance to the older age groups.
+
+```{r example2.6, collapse=TRUE, echo=FALSE}
+homeMortgage <- homeMortgage %>%
+  filter(Age.of.Borrower != 9)
+homeMortgage$Age.of.Borrower <- as.factor(homeMortgage$Age.of.Borrower)
+
+ggplot(homeMortgage,aes(x=Age.of.Borrower,fill=Occupancy.Code)) +
+  geom_bar(position="fill") +
+  scale_x_discrete(breaks=1:7,labels=c("Under 25 Y/O", "25 to 34 Y/O", "35 to 44 Y/O","45 to 54 Y/O","55 to 64 Y/O","65 to 74 Y/O","over 74 Y/O"))+
+  ylab("Number of Loans") +
+  xlab("Borrower's Age") +
+  ggtitle("Borrower's Age and Occupancy Categories")+
+  theme_classic()+ theme(legend.position="top")
+```
+
+## 2.7 Interest rate and occupancy category
+Just like the density distribution of the loan amount for each occupancy code, the principal residence and second home have almost the same distribution for the interest rates, with the exception that principal residence has more variability, this is evidenced by the sharp fluctuations of its density. The distribution for the interest rates of the investment properties has the roughly the same shape as the distribution for the second homes but shifted to the right towards the higher values of the interest rates. The lower interest rates for the investment properties overlap with the higher interest rates for the primary residence and second home. This is also confirmed by the following box plot.
+
+```{r example2.7, collapse=TRUE, echo=FALSE}
+homeMortgage <- homeMortgage %>%
+  filter(Interest.Rate.at.Origination != 99.000)
+homeMortgage$Interest.Rate.at.Origination <- as.numeric(homeMortgage$Interest.Rate.at.Origination)
+
+ggplot(homeMortgage,aes(x=Interest.Rate.at.Origination,fill=Occupancy.Code)) +
+  geom_density(alpha=0.6)+
+  ylab("Density") +
+  xlab("Interest Rates") +
+  ggtitle("Interest Rate and Occupancy Categories")+
+  theme_classic()+ theme(legend.position="top")
+```
+
+## 2.8 Interest rate and occupancy category (Box Plots)
+
+Once again, the only difference for between the primary residence and second homes interest rates is that the values for the former are more disperse, presenting values further again from the mean, meanwhile the values for the later one are more evenly distributed and closer to the mean value. In this boxplot it is seen once again that in general the mortgages for investment properties present for the most part higher interest rates.
+
+```{r example2.8, collapse=TRUE, echo=FALSE, warning=FALSE}
+ggplot(homeMortgage,aes(x=Occupancy.Code,y=Interest.Rate.at.Origination,fill=Occupancy.Code)) +
+  geom_boxplot()+
+  ylab("Interest Rates") +
+  xlab("Occupancy Categories") +
+  ggtitle("Interest Rate and Occupancy Categories")+
+  theme_classic()+ theme(legend.position="top")
+```
+
+# 3 Classification And Regression Tree
+
+According to [scikit-learn.org](https://scikit-learn.org/stable/modules/tree.html), a Classification And Regression Tree is a predictive model, which explains how an outcome variable's values can be predicted based on other values.  
+
+Using this model we predict whether the home occupancy category of the mortgage would be **3 = Investment property or not**. The tree shows the conditions which would be used to determine whether the mortgage would be taken to buy a **Investment property**.
+
+## 3.1 Relevant columns selection for modelling
+
+In this subsection columns which would be required for modelling is to be selected. The columns are converted as the appropriate data type, so that they can be used for the model.
+
+```{r example4, collapse=TRUE, echo=FALSE, warning=FALSE, message=FALSE}
+selectedCols <- c("Occupancy.Code","Enterprise.Flag","Purpose.of.Loan",
+                 "Federal.Guarantee","US.Postal.State.Code",
+                 "Note.Amount","Age.of.Borrower",
+                 "First.Time.Home.Buyer","Property.Type",
+                 "Lien.Status","Interest.Rate.at.Origination",
+                 "Preapproval", "Application.Channel","Credit.Score.Model...Borrower",
+                 "Credit.Score.Model...Co.Borrower",
+                 "Manufactured.Home.â...Land.Property.Interest",
+                 "High.Opportunity.Area","Qualified.Opportunity.Zone..QOZ.",
+                 "Area.of.Concentrated.Poverty","Persistent.Poverty.County")
+
+homeMortgage_selectedCols <- homeMortgage %>% select(selectedCols) %>%
+  mutate(isInvetmentProperty = FALSE)  %>%
+  mutate(isInvetmentProperty = replace(isInvetmentProperty, Occupancy.Code == 3, TRUE)) %>%
+  select(-Occupancy.Code)
+# Convert all columns to appropriate data type
+homeMortgage_selectedCols$US.Postal.State.Code = as.numeric(homeMortgage_selectedCols$US.Postal.State.Code)
+homeMortgage_selectedCols$Note.Amount = as.numeric(homeMortgage_selectedCols$Note.Amount)
+homeMortgage_selectedCols$Age.of.Borrower = as.factor(homeMortgage_selectedCols$Age.of.Borrower)
+homeMortgage_selectedCols$Enterprise.Flag = as.factor(homeMortgage_selectedCols$Enterprise.Flag)
+homeMortgage_selectedCols$Purpose.of.Loan = as.factor(homeMortgage_selectedCols$Purpose.of.Loan)
+homeMortgage_selectedCols$Federal.Guarantee = as.factor(homeMortgage_selectedCols$Federal.Guarantee)
+homeMortgage_selectedCols$First.Time.Home.Buyer = as.factor(homeMortgage_selectedCols$First.Time.Home.Buyer)
+homeMortgage_selectedCols$Property.Type = as.factor(homeMortgage_selectedCols$Property.Type)
+#
+homeMortgage_selectedCols$Lien.Status =  as.numeric(homeMortgage_selectedCols$Lien.Status)
+homeMortgage_selectedCols$Interest.Rate.at.Origination =  as.numeric(homeMortgage_selectedCols$Interest.Rate.at.Origination)
+#
+homeMortgage_selectedCols$Preapproval =  as.numeric(homeMortgage_selectedCols$Preapproval)
+homeMortgage_selectedCols$Credit.Score.Model...Borrower =  as.factor(homeMortgage_selectedCols$Credit.Score.Model...Borrower)
+homeMortgage_selectedCols$Credit.Score.Model...Co.Borrower =  as.factor(homeMortgage_selectedCols$Credit.Score.Model...Co.Borrower)
+homeMortgage_selectedCols$Application.Channel =  as.factor(homeMortgage_selectedCols$Application.Channel)
+homeMortgage_selectedCols$Manufactured.Home.â...Land.Property.Interest =  as.factor(homeMortgage_selectedCols$Manufactured.Home.â...Land.Property.Interest)
+homeMortgage_selectedCols$High.Opportunity.Area =  as.factor(homeMortgage_selectedCols$High.Opportunity.Area) 
+homeMortgage_selectedCols$Qualified.Opportunity.Zone..QOZ. =  as.factor(homeMortgage_selectedCols$Qualified.Opportunity.Zone..QOZ.) 
+homeMortgage_selectedCols$Area.of.Concentrated.Poverty =  as.factor(homeMortgage_selectedCols$Area.of.Concentrated.Poverty) 
+homeMortgage_selectedCols$Persistent.Poverty.County =  as.factor(homeMortgage_selectedCols$Persistent.Poverty.County)
+```
+
+## 3.2 Build & visualize the classification & regression tree
+We build and visualize the Classification & Regression Tree model. Through this model, we can examine the most important features which impact the decision for the mortgage taker to take the loan for buying an **Investment Property**.
+
+```{r example5, collapse=TRUE, echo=FALSE}
+#Set seed
+set.seed(123456)
+split = sample.split(homeMortgage_selectedCols$isInvetmentProperty, SplitRatio = 0.7)
+Train = subset(homeMortgage_selectedCols, split==TRUE)
+Test = subset(homeMortgage_selectedCols, split==FALSE)
+
+# Classification & Regression Tree model
+homeMortgageTree = rpart(isInvetmentProperty ~ ., method="class", data = Train, control=rpart.control(minbucket=5))
+
+prp(homeMortgageTree)
+```
+
+* From the above tree , the following observations can be made:  
+  + **Interest Rate** is the most important feature since it is the first feature used to take the decision.
+  + **First Time Home Buyer** is the Second most important feature used for the decision.
+  + Purpose, then interest rate less than 5.5% are the other features used for building the Tree.
+
+# 4 Investment Property Influencers
+
+Finally we would like to investigate which factors influence the decision that the mortgage would be taken for financing an **Investment Property**. For this we build a [eXtreme Gradient Boosting model](https://xgboost.readthedocs.io/en/stable/) on the data so as to find the importance of the various factors in deciding whether the mortgage would be taken for an **Investment Property** or not.
+
+```{r example6, collapse=TRUE, echo=FALSE, warning=FALSE}
+dummyData <- dummyVars(" ~ .",data = homeMortgage_selectedCols, fullRank=T)
+
+homeMortgage_selectedCols2 <- data.frame(predict(dummyData, newdata = homeMortgage_selectedCols))
+
+
+homeMortgage_selectedCols2 = homeMortgage_selectedCols2 %>% select(-isInvetmentPropertyTRUE)
+
+homeMortgage_selectedCols2$isInvetmentProperty = homeMortgage_selectedCols$isInvetmentProperty
+
+features <- colnames(homeMortgage_selectedCols2)
+
+for (f in features) {
+  if ((class(homeMortgage_selectedCols2[[f]])=="factor") || (class(homeMortgage_selectedCols2[[f]])=="character")) {
+    levels <- unique(homeMortgage_selectedCols2[[f]])
+    homeMortgage_selectedCols2[[f]] <- as.numeric(factor(homeMortgage_selectedCols2[[f]], levels=levels))
+  }
+}
+
+formula = isInvetmentProperty ~ .
+
+fitControl <- trainControl(method="none",classProbs = TRUE)
+
+xgbGrid <- expand.grid(nrounds = 100,
+                       max_depth = 3,
+                       eta = .05,
+                       gamma = 0,
+                       colsample_bytree = .8,
+                       min_child_weight = 1,
+                       subsample = 1)
+
+set.seed(123456)
+
+homeMortgage_selectedCols2$isInvetmentProperty = as.numeric(homeMortgage_selectedCols2$isInvetmentProperty)
+levels(homeMortgage_selectedCols2$isInvetmentProperty) = c("No","Yes")
+
+homeMortgageXGB = train(formula, data = homeMortgage_selectedCols2,
+                        method = "xgbTree",trControl = fitControl,
+                        tuneGrid = xgbGrid,na.action = na.pass)
+
+importance = varImp(homeMortgageXGB)
+
+varImportance <- data.frame(Variables = row.names(importance[[1]]), 
+                            Importance = round(importance[[1]]$Overall,2))
+
+# Create a rank variable based on importance
+rankImportance <- varImportance %>%
+  mutate(Rank = paste0('#',dense_rank(desc(Importance)))) %>%
+  head(5)
+
+rankImportancefull = rankImportance
+
+ggplot(rankImportance, aes(x = reorder(Variables, Importance), 
+                           y = Importance)) +
+  geom_bar(stat='identity',colour="white", fill = fillColor3) +
+  geom_text(aes(x = Variables, y = 1, label = Rank),
+            hjust=0, vjust=.5, size = 4, colour = 'black',
+            fontface = 'bold') +
+  labs(x = 'Variables', title = 'Relative Variable Importance') +
+  coord_flip() + 
+  theme_classic()
+```
+
+The graph above shows the factors which affects the decision of **Investment Property**. Clearly the **Interest rate** seemed to be the most prominent factor. The second most important factor for such decision is whether the investor is **first time home buyer or not**. The most interesting factor is the 4th factor, which takes into consideration whether the home is located in the area where is classified as **concentrated poverty area**.
+
+# 5 Important Decision Factor Analysis
+
+## 5.1 First time home buyer
+We examine the First Time Home Buyer distribution with the Occupancy Code in the following bar graph.
+
+```{r example5.1, collapse=TRUE, echo=FALSE}
+FTHB <- homeMortgage %>% group_by(Occupancy.Code,First.Time.Home.Buyer) %>%
+  tally()
+
+  ggplot(FTHB, aes(x = First.Time.Home.Buyer,y = n,fill = Occupancy.Code)) +
+    geom_bar(stat='identity',colour="white") +
+    scale_x_continuous(breaks=1:2,labels=c("Yes","No"))+
+    coord_flip() +
+    labs(x = 'First Time Home Buyer', y = 'Count', title = 'First Time Home Buyer Distribution with Occupancy Code') +
+    theme_classic() + theme(legend.position="right")
+```
+
+## 5.2 Area of concentrated poverty
+We examine the Area of Concentrated Poverty distribution with the Occupancy Code in the following bar graph.
+
+```{r example5.2, collapse=TRUE, echo=FALSE}
+PovertyArea <- homeMortgage %>% group_by(Occupancy.Code,Area.of.Concentrated.Poverty) %>%
+  tally()
+  
+  ggplot(PovertyArea, aes(x = Area.of.Concentrated.Poverty,y = n,fill = Occupancy.Code)) +
+    geom_bar(stat='identity',colour="white") +
+    coord_flip() +
+    #scale_x_discrete(labels = c('1','2'), breaks=c('a','b'))+
+    scale_x_continuous(breaks=1:2,labels=c("Yes","No"))+
+    labs(x = 'Area of Concentrated Poverty', y = 'Count', title = 'Area of Concentrated Poverty with Occupancy Code') +
+    theme_classic() + theme(legend.position="top")
+```
+
+# 6 Conclusion
+Finally we can conclude from this EDA, that it provides an overview of the characteristics of single family mortgages. It also provides key information for the potential investors to make a decision based on the most important factors when it comes to buy an **Investment property**.
+
+## 6.1 Summary of the EDA on mortgage conditions
+The mortgages for the principal residences and second homes have the same characteristics. Regarding the investment properties, it has roughly the same characteristics except at the extremes of the distribution. This means that the investment properties have the mortgages with a higher interest rate and lower amount, but these cases make up for only a small part of all the mortgages. 
+Therefore, the EDA suggests that investment properties have the least advantageous mortgage conditions. 
+
+## 6.2 Recommendations
+However, our recommendation for the families who are considering taking on another mortgage to purchase an investment property is that they should consider interest rate for such investment is higher. This is also confirmed by the EDA and the XGBOOST model. This model also suggests first time home buyers usually do not buy any investment property. The investor of the property also need to consider if the property is situated in a high poverty zone.
